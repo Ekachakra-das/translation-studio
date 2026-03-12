@@ -1,0 +1,25 @@
+:root {
+  --bg: #f8fafc;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --brand: #0f766e;
+  --brand-strong: #115e59;
+  --panel: #ffffff;
+  --soft: #f8fafc;
+  --danger: #b91c1c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1220;
+    --ink: #e5edf8;
+    --muted: #93a4bd;
+    --line: #263247;
+    --brand: #2dd4bf;
+    --brand-strong: #14b8a6;
+    --panel: #0f172a;
+    --soft: #111e34;
+    --danger: #f87171;
+  }
+}

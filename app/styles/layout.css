@@ -1,0 +1,124 @@
+.page-shell {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 84px 16px 72px;
+}
+
+.demo-notice {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1200;
+  padding: 10px 16px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #0f172a;
+  background: linear-gradient(90deg, #fef3c7 0%, #fde68a 50%, #fef3c7 100%);
+  border-bottom: 1px solid rgba(146, 64, 14, 0.2);
+}
+
+.page-header {
+  margin-bottom: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.title {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.title-brand {
+  color: var(--brand);
+}
+
+.title-icon-wrap {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d9488;
+  color: #ffffff;
+  box-shadow: 0 10px 15px -3px rgba(13, 148, 136, 0.35);
+}
+
+.subtitle {
+  margin: 2px 0 0;
+  color: #64748b;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #e2e8f080;
+  border-radius: 12px;
+  padding: 4px;
+}
+
+.mode-toggle button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #475569;
+  border-radius: 9px;
+  padding: 7px 18px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mode-toggle button.is-active {
+  background: #ffffff;
+  border-color: var(--line);
+  color: var(--brand);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.card-clean {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(31, 38, 135, 0.07);
+}
+
+.editor-card {
+  padding: 24px;
+  margin-bottom: 26px;
+  position: relative;
+  z-index: 50;
+}
+
+.page-footer {
+  margin-top: 36px;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  text-align: center;
+  color: #64748b;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
