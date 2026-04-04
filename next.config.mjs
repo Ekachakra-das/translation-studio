@@ -1,4 +1,5 @@
 /** @type {import('next').NextConfig} */
+<<<<<<< HEAD
 const nextConfig = {
   async headers() {
     return [
@@ -30,5 +31,8 @@ const nextConfig = {
     ];
   }
 };
+=======
+const nextConfig = {};
+>>>>>>> origin/main
 
 export default nextConfig;
