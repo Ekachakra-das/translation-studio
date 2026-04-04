@@ -116,7 +116,6 @@ async function mapWithConcurrency<T, R>(
 
 export async function POST(req: Request) {
   try {
-<<<<<<< HEAD
     const origin = req.headers.get("origin");
     const host = req.headers.get("host");
 
@@ -125,8 +124,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Forbidden: Cross-origin requests are not allowed." }, { status: 403 });
     }
 
-=======
->>>>>>> origin/main
     const body = (await req.json()) as Payload;
 
     if (body.mode === "text") {
@@ -252,15 +249,10 @@ export async function POST(req: Request) {
       translatedJson: unflattenObject(translatedFlat)
     });
   } catch (error) {
-<<<<<<< HEAD
     console.error("Translation error:", error);
     return NextResponse.json(
       { error: "Internal Server Error. Please try again later." },
       { status: 500 }
     );
-=======
-    const message = error instanceof Error ? error.message : "Unexpected server error";
-    return NextResponse.json({ error: message }, { status: 500 });
->>>>>>> origin/main
   }
 }
