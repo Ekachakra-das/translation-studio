@@ -243,6 +243,7 @@ export default function HomePage() {
         const response = await fetch("/api/translate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({
             mode,
             provider: DEFAULT_PROVIDER,
@@ -273,6 +274,7 @@ export default function HomePage() {
       const response = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           mode,
           provider: DEFAULT_PROVIDER,

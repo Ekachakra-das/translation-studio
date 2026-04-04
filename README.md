@@ -28,8 +28,9 @@ npm install
 ```bash
 cp .env.example .env.local
 ```
-3. Set required key in `.env.local`:
+3. Set required keys in `.env.local`:
 - `NVIDIA_API_KEY`
+- `TRANSLATION_API_TOKEN`
 
 Optional envs:
 - `NEXT_PUBLIC_DEFAULT_PROVIDER` (default: `gemini`)
@@ -37,6 +38,7 @@ Optional envs:
 - `NEXT_PUBLIC_GEMINI_MODEL` (default: `gemini-3.1-flash-lite-preview`)
 - `NVIDIA_BASE_URL` (default: `https://integrate.api.nvidia.com/v1`)
 - `GEMINI_API_KEY` (used when Gemini is primary)
+- `TRANSLATION_API_TOKEN` (required for `/api/translate`; middleware sets an HttpOnly cookie for same-origin browser requests)
 - `GEMINI_FALLBACK_MODEL` (default: `gemini-3.1-flash-lite-preview`)
 - `NVIDIA_FALLBACK_MODEL` (default: `stepfun-ai/step-3.5-flash`)
 
