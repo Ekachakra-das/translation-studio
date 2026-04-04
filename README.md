@@ -17,7 +17,7 @@ Next.js (App Router) web app for localization workflows.
 
 ## Prerequisites
 - Node.js 20+ (LTS recommended)
-- npm
+- npm 
 
 ## Setup
 1. Install dependencies:
