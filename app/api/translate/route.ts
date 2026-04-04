@@ -250,9 +250,10 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     console.error("Translation error:", error);
+    const message = error instanceof Error ? error.message : "Internal Server Error. Please try again later.";
     return NextResponse.json(
-      { error: "Internal Server Error. Please try again later." },
-      { status: 500 }
+      { error: message },
+      { status: 502 }
     );
   }
 }

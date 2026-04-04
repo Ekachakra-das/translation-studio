@@ -32,13 +32,13 @@ cp .env.example .env.local
 - `NVIDIA_API_KEY`
 
 Optional envs:
-- `NEXT_PUBLIC_DEFAULT_PROVIDER` (default: `nvidia`)
-- `NEXT_PUBLIC_DEFAULT_MODEL` (default: `qwen/qwen3.5-122b-a10b`)
-- `NEXT_PUBLIC_NVIDIA_MODEL` (default: `qwen/qwen3.5-122b-a10b`)
-- `NEXT_PUBLIC_GEMINI_MODEL` (default: `gemini-2.5-flash`)
+- `NEXT_PUBLIC_DEFAULT_PROVIDER` (default: `gemini`)
+- `NEXT_PUBLIC_NVIDIA_MODEL` (default: `stepfun-ai/step-3.5-flash`)
+- `NEXT_PUBLIC_GEMINI_MODEL` (default: `gemini-3.1-flash-lite-preview`)
 - `NVIDIA_BASE_URL` (default: `https://integrate.api.nvidia.com/v1`)
-- `GEMINI_API_KEY` (used for automatic fallback)
-- `GEMINI_FALLBACK_MODEL` (default: `gemini-2.5-flash`)
+- `GEMINI_API_KEY` (used when Gemini is primary)
+- `GEMINI_FALLBACK_MODEL` (default: `gemini-3.1-flash-lite-preview`)
+- `NVIDIA_FALLBACK_MODEL` (default: `stepfun-ai/step-3.5-flash`)
 
 ## Development
 Run:
@@ -59,10 +59,9 @@ npm run start
 ## Change Default Model
 Set in `.env.local`:
 ```bash
-NEXT_PUBLIC_DEFAULT_PROVIDER=nvidia
-NEXT_PUBLIC_DEFAULT_MODEL=qwen/qwen3.5-122b-a10b
-NEXT_PUBLIC_NVIDIA_MODEL=qwen/qwen3.5-122b-a10b
-NEXT_PUBLIC_GEMINI_MODEL=gemini-2.5-flash
+NEXT_PUBLIC_DEFAULT_PROVIDER=gemini
+NEXT_PUBLIC_NVIDIA_MODEL=stepfun-ai/step-3.5-flash
+NEXT_PUBLIC_GEMINI_MODEL=gemini-3.1-flash-lite-preview
 ```
 
 If these are missing, app falls back to built-in defaults in `app/page.tsx`.

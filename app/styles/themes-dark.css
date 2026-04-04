@@ -33,6 +33,18 @@
     color: #ffffff;
   }
 
+  .title {
+    color: #f8fafc;
+  }
+
+  .title-brand {
+    color: #67e8f9;
+  }
+
+  .subtitle {
+    color: #94a3b8;
+  }
+
   input,
   select,
   textarea {

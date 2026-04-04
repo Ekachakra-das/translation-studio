@@ -13,8 +13,9 @@
     "deploy": "bun run pages:build && wrangler pages deploy .vercel/output/static"
   },
   "dependencies": {
+    "@google/genai": "^1.48.0",
     "@iconify/react": "^6.0.2",
-    "next": "^15.2.0",
+    "next": "15.5.14",
     "react": "19.0.0",
     "react-dom": "19.0.0"
   },
@@ -29,6 +30,7 @@
     "wrangler": "^4.72.0"
   },
   "overrides": {
+    "tar": "^7.5.13",
     "undici": "^6.21.1"
   }
 }

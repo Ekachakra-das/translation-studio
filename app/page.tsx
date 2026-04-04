@@ -6,16 +6,13 @@ import { Icon } from "@iconify/react";
 type Mode = "text" | "json";
 type JsonQualityMode = "fast" | "quality" | "precise";
 const DEFAULT_PROVIDER: "nvidia" | "gemini" =
-  process.env.NEXT_PUBLIC_DEFAULT_PROVIDER === "gemini" ? "gemini" : "nvidia";
-const LEGACY_DEFAULT_MODEL = process.env.NEXT_PUBLIC_DEFAULT_MODEL?.trim() || "";
+  process.env.NEXT_PUBLIC_DEFAULT_PROVIDER === "nvidia" ? "nvidia" : "gemini";
 const DEFAULT_NVIDIA_MODEL =
   process.env.NEXT_PUBLIC_NVIDIA_MODEL?.trim() ||
-  LEGACY_DEFAULT_MODEL ||
-  "qwen/qwen3.5-122b-a10b";
+  "stepfun-ai/step-3.5-flash";
 const DEFAULT_GEMINI_MODEL =
   process.env.NEXT_PUBLIC_GEMINI_MODEL?.trim() ||
-  LEGACY_DEFAULT_MODEL ||
-  "gemini-2.5-flash";
+  "gemini-3.1-flash-lite-preview";
 const DEFAULT_MODEL =
   DEFAULT_PROVIDER === "gemini" ? DEFAULT_GEMINI_MODEL : DEFAULT_NVIDIA_MODEL;
 const THINKING_LABELS = {

@@ -1,3 +1,5 @@
+import { GoogleGenAI } from "@google/genai";
+
 export type PipelineOutput = {
   initialTranslation: string;
   critique: string;
@@ -34,15 +36,23 @@ export type BatchPipelineRow = {
   improved: string;
 };
 
+type TokenUsage = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+};
+
 const FAST_TEXT_THRESHOLD_CHARS = 4_000;
-const FAST_MODE_TIMEOUT_MS = 15_000;
-const THINK_MODE_TIMEOUT_MS = 25_000;
+const FAST_MODE_TIMEOUT_MS = 30_000;
+const THINK_MODE_TIMEOUT_MS = 45_000;
 const MEDIUM_PROMPT_THRESHOLD_CHARS = 8_000;
-const MEDIUM_TIMEOUT_MS = 30_000;
+const MEDIUM_TIMEOUT_MS = 60_000;
 const LARGE_TIMEOUT_STEP_CHARS = 2_000;
-const LARGE_TIMEOUT_STEP_MS = 15_000;
-const MAX_TIMEOUT_MS = 90_000;
-const DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-2.5-flash";
+const LARGE_TIMEOUT_STEP_MS = 20_000;
+const MAX_TIMEOUT_MS = 180_000;
+const DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite-preview";
+const DEFAULT_NVIDIA_FALLBACK_MODEL =
+  process.env.NVIDIA_FALLBACK_MODEL?.trim() || "stepfun-ai/step-3.5-flash";
 const MAX_OUTPUT_TOKENS_BY_MODE: Record<ThinkingMode, number> = {
   standard: 30_720,
   extended: 40_960,
@@ -93,6 +103,27 @@ function getTimeoutGuidance(thinkingMode: ThinkingMode): string {
   return "Try a shorter text or switch to Extended or Standard mode.";
 }
 
+function formatTokenUsage(usage: TokenUsage): string {
+  const parts = [
+    usage.promptTokens !== undefined ? `prompt=${usage.promptTokens}` : null,
+    usage.completionTokens !== undefined ? `completion=${usage.completionTokens}` : null,
+    usage.totalTokens !== undefined ? `total=${usage.totalTokens}` : null
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(", ") : "tokens=unknown";
+}
+
+function logModelCall(params: {
+  provider: Provider;
+  model: string;
+  durationMs: number;
+  usage: TokenUsage;
+}): void {
+  console.info(
+    `[llm] provider=${params.provider} model=${params.model} durationMs=${params.durationMs} ${formatTokenUsage(params.usage)}`
+  );
+}
+
 function sanitizeProviderReferences(message: string): string {
   const normalized = message
     .replace(/\bNVIDIA\b/gi, "AI")
@@ -124,9 +155,17 @@ function hasGeminiApiKey(): boolean {
   return Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
 }
 
+function hasNvidiaApiKey(): boolean {
+  return Boolean(process.env.NVIDIA_API_KEY);
+}
+
 function getGeminiFallbackModel(): string {
   const envModel = process.env.GEMINI_FALLBACK_MODEL?.trim();
   return envModel && envModel.length > 0 ? envModel : DEFAULT_GEMINI_FALLBACK_MODEL;
+}
+
+function getNvidiaFallbackModel(): string {
+  return DEFAULT_NVIDIA_FALLBACK_MODEL;
 }
 
 function isRetryablePrimaryError(error: unknown): boolean {
@@ -139,6 +178,7 @@ function isRetryablePrimaryError(error: unknown): boolean {
     message.includes("timeout") ||
     message.includes("429") ||
     message.includes("503") ||
+    message.includes("degraded function cannot be invoked") ||
     message.includes("rate limit") ||
     message.includes("temporarily unavailable") ||
     message.includes("overloaded")
@@ -206,6 +246,14 @@ function getNvidiaApiKey() {
   return apiKey;
 }
 
+function getGeminiApiKey() {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing AI API key in environment.");
+  }
+  return apiKey;
+}
+
 async function chatNvidia(
   model: string,
   system: string,
@@ -216,6 +264,7 @@ async function chatNvidia(
   const apiKey = getNvidiaApiKey();
   const heavyMode = thinkingMode === "extended" || thinkingMode === "deep";
   const timeoutMs = getAdaptiveTimeoutMs(thinkingMode, inputChars ?? user.length);
+  const startedAt = Date.now();
   const request: Record<string, unknown> = {
     model,
     stream: false,
@@ -253,12 +302,28 @@ async function chatNvidia(
   let data:
     | {
         error?: { message?: string } | string;
+        detail?: string;
+        message?: string;
+        title?: string;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          total_tokens?: number;
+        };
         choices?: Array<{ message?: { content?: string | null } }>;
       }
     | undefined;
   try {
     data = JSON.parse(raw) as {
       error?: { message?: string } | string;
+      detail?: string;
+      message?: string;
+      title?: string;
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+      };
       choices?: Array<{ message?: { content?: string | null } }>;
     };
   } catch {
@@ -268,13 +333,35 @@ async function chatNvidia(
   }
 
   if (!response.ok) {
-    const errorMessage = sanitizeProviderReferences(
+    console.info(
+      `[llm] provider=nvidia model=${model} durationMs=${Date.now() - startedAt} status=${response.status} tokens=unknown`
+    );
+    const responseMessage =
       typeof data?.error === "string"
         ? data.error
-        : data?.error?.message || `AI request failed (${response.status}).`
+        : data?.error?.message || data?.detail || data?.message || data?.title || "";
+    const normalizedMessage = responseMessage.toLowerCase();
+    if (normalizedMessage.includes("degraded function cannot be invoked")) {
+      throw new Error(
+        "AI provider is temporarily unavailable. Please try again shortly."
+      );
+    }
+    const errorMessage = sanitizeProviderReferences(
+      responseMessage || `AI request failed (${response.status}).`
     );
     throw new Error(errorMessage);
   }
+
+  logModelCall({
+    provider: "nvidia",
+    model,
+    durationMs: Date.now() - startedAt,
+    usage: {
+      promptTokens: data?.usage?.prompt_tokens,
+      completionTokens: data?.usage?.completion_tokens,
+      totalTokens: data?.usage?.total_tokens
+    }
+  });
 
   return data?.choices?.[0]?.message?.content?.trim() || "";
 }
@@ -288,50 +375,51 @@ async function chatGemini(
 ): Promise<string> {
   const heavyMode = thinkingMode === "extended" || thinkingMode === "deep";
   const timeoutMs = getAdaptiveTimeoutMs(thinkingMode, inputChars ?? user.length);
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing AI API key in environment.");
-  }
+  const apiKey = getGeminiApiKey();
+  const startedAt = Date.now();
+  const ai = new GoogleGenAI({ apiKey });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const response = await fetchWithTimeout(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: system }]
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: user }]
-          }
-        ],
-        generationConfig: {
-          temperature: heavyMode ? 0.2 : 0.3,
-          maxOutputTokens: MAX_OUTPUT_TOKENS_BY_MODE[thinkingMode]
-        }
-      })
-    },
-    timeoutMs,
-    `AI request timed out in ${thinkingMode} mode. ${getTimeoutGuidance(thinkingMode)}`
-  );
-
-  const data = (await response.json()) as {
-    error?: { message?: string };
-    candidates?: Array<{
-      content?: { parts?: Array<{ text?: string }> };
-    }>;
-  };
-
-  if (!response.ok) {
-    throw new Error(
-      sanitizeProviderReferences(data.error?.message || `AI request failed (${response.status}).`)
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model,
+      contents: user,
+      config: {
+        abortSignal: controller.signal,
+        systemInstruction: system,
+        temperature: heavyMode ? 0.2 : 0.3,
+        maxOutputTokens: MAX_OUTPUT_TOKENS_BY_MODE[thinkingMode]
+      }
+    });
+  } catch (error) {
+    console.info(
+      `[llm] provider=gemini model=${model} durationMs=${Date.now() - startedAt} tokens=unknown`
     );
+    if (error instanceof Error) {
+      if (error.name === "AbortError") {
+        throw new Error(`AI request timed out in ${thinkingMode} mode. ${getTimeoutGuidance(thinkingMode)}`);
+      }
+      throw new Error(sanitizeProviderReferences(error.message));
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
 
-  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+  logModelCall({
+    provider: "gemini",
+    model,
+    durationMs: Date.now() - startedAt,
+    usage: {
+      promptTokens: response.usageMetadata?.promptTokenCount,
+      completionTokens: response.usageMetadata?.candidatesTokenCount,
+      totalTokens: response.usageMetadata?.totalTokenCount
+    }
+  });
+
+  return response.text?.trim() || "";
 }
 
 async function chat(
@@ -343,7 +431,36 @@ async function chat(
   inputChars?: number
 ): Promise<string> {
   if (provider === "gemini") {
-    return chatGemini(model, system, user, thinkingMode, inputChars);
+    if (!hasGeminiApiKey() && hasNvidiaApiKey()) {
+      return chatNvidia(
+        getNvidiaFallbackModel(),
+        system,
+        user,
+        thinkingMode,
+        inputChars
+      );
+    }
+
+    try {
+      return await chatGemini(model, system, user, thinkingMode, inputChars);
+    } catch (primaryError) {
+      const isRetryable =
+        primaryError instanceof Error &&
+        (isRetryablePrimaryError(primaryError) ||
+          primaryError.message === "Missing AI API key in environment.");
+
+      if (!isRetryable || !hasNvidiaApiKey()) {
+        throw primaryError;
+      }
+
+      return chatNvidia(
+        getNvidiaFallbackModel(),
+        system,
+        user,
+        thinkingMode,
+        inputChars
+      );
+    }
   }
 
   if (isNvidiaCircuitOpen() && hasGeminiApiKey()) {
