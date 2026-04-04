@@ -39,6 +39,15 @@
     background: rgba(13, 22, 40, 0.65);
     border-color: #2b3952;
     color: #e5edf8;
+    caret-color: #e5edf8;
+  }
+
+  input:focus,
+  select:focus,
+  textarea:focus {
+    background: rgba(13, 22, 40, 0.88);
+    border-color: #2dd4bf;
+    box-shadow: 0 0 0 4px rgba(45, 212, 191, 0.16);
   }
 
   .btn-ghost {

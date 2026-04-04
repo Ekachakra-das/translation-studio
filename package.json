@@ -14,11 +14,7 @@
   },
   "dependencies": {
     "@iconify/react": "^6.0.2",
-<<<<<<< HEAD
     "next": "^15.2.0",
-=======
-    "next": "15.1.7",
->>>>>>> origin/main
     "react": "19.0.0",
     "react-dom": "19.0.0"
   },
@@ -31,5 +27,8 @@
     "eslint-config-next": "15.1.7",
     "typescript": "^5.8.2",
     "wrangler": "^4.72.0"
+  },
+  "overrides": {
+    "undici": "^6.21.1"
   }
 }
