@@ -13,8 +13,6 @@ const DEFAULT_NVIDIA_MODEL =
 const DEFAULT_GEMINI_MODEL =
   process.env.NEXT_PUBLIC_GEMINI_MODEL?.trim() ||
   "gemini-3.1-flash-lite-preview";
-const DEFAULT_MODEL =
-  DEFAULT_PROVIDER === "gemini" ? DEFAULT_GEMINI_MODEL : DEFAULT_NVIDIA_MODEL;
 const THINKING_LABELS = {
   standard: "Standard",
   extended: "Think More"
@@ -45,6 +43,7 @@ type TextResponse = {
   initialTranslation: string;
   critique: string;
   improvedTranslation: string;
+  meta?: ResponseMeta;
 };
 
 type JsonRow = {
@@ -58,9 +57,51 @@ type JsonRow = {
 type JsonResponse = {
   table: JsonRow[];
   translatedJson: Record<string, unknown>;
+  meta?: ResponseMeta;
 };
 
 const SETTINGS_STORAGE_KEY = "translation-improver-settings-v1";
+const PROVIDER_STICKY_STORAGE_KEY = "translation-provider-sticky-v1";
+
+type Provider = "nvidia" | "gemini";
+type ResponseMeta = {
+  requestedProvider: Provider;
+  providerUsed: Provider;
+  modelUsed: string;
+  durationMs?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  fallbackFrom?: Provider;
+  fallbackReason?: "missing_api_key" | "retryable_error" | "rate_limit_daily";
+  stickyNvidiaToday?: boolean;
+};
+type StickyProviderState = {
+  provider: Provider;
+  expiresAt: number;
+  reason: string;
+};
+
+function logExecutionMeta(meta: ResponseMeta | undefined, mode: Mode): void {
+  if (!meta) {
+    return;
+  }
+
+  const parts = [
+    `[translate:${mode}]`,
+    `requested=${meta.requestedProvider}`,
+    `used=${meta.providerUsed}`,
+    `model=${meta.modelUsed}`,
+    meta.durationMs !== undefined ? `durationMs=${meta.durationMs}` : null,
+    meta.promptTokens !== undefined ? `prompt=${meta.promptTokens}` : null,
+    meta.completionTokens !== undefined ? `completion=${meta.completionTokens}` : null,
+    meta.totalTokens !== undefined ? `total=${meta.totalTokens}` : null,
+    meta.fallbackFrom ? `fallbackFrom=${meta.fallbackFrom}` : null,
+    meta.fallbackReason ? `fallbackReason=${meta.fallbackReason}` : null
+  ].filter(Boolean);
+
+  console.info(parts.join(" "));
+}
 
 type PersistedSettings = {
   mode: Mode;
@@ -93,7 +134,49 @@ function getNextJsonQualityMode(current: JsonQualityMode): JsonQualityMode {
   return "fast";
 }
 
+function getModelForProvider(provider: Provider): string {
+  return provider === "gemini" ? DEFAULT_GEMINI_MODEL : DEFAULT_NVIDIA_MODEL;
+}
+
+function getStickyProviderFromStorage(): Provider | null {
+  try {
+    const raw = localStorage.getItem(PROVIDER_STICKY_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<StickyProviderState>;
+    if (
+      (parsed.provider !== "gemini" && parsed.provider !== "nvidia") ||
+      typeof parsed.expiresAt !== "number" ||
+      parsed.expiresAt <= Date.now()
+    ) {
+      localStorage.removeItem(PROVIDER_STICKY_STORAGE_KEY);
+      return null;
+    }
+
+    return parsed.provider;
+  } catch {
+    localStorage.removeItem(PROVIDER_STICKY_STORAGE_KEY);
+    return null;
+  }
+}
+
+function getEndOfLocalDayTimestamp(): number {
+  const now = new Date();
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    23,
+    59,
+    59,
+    999
+  ).getTime();
+}
+
 export default function HomePage() {
+  const [provider, setProvider] = useState<Provider>(DEFAULT_PROVIDER);
   const [mode, setMode] = useState<Mode>("text");
   const [sourceLang, setSourceLang] = useState("English");
   const [targetLang, setTargetLang] = useState("Russian");
@@ -113,6 +196,7 @@ export default function HomePage() {
   const [jsonCopyClicked, setJsonCopyClicked] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const settingsRestoredRef = useRef(false);
+  const activeModel = useMemo(() => getModelForProvider(provider), [provider]);
 
   const translatedJsonString = useMemo(() => {
     if (!jsonResult) {
@@ -137,6 +221,13 @@ export default function HomePage() {
     }
     return jsonInput.trim().length === 0;
   }, [loading, mode, textInput, jsonInput]);
+
+  useEffect(() => {
+    const stickyProvider = getStickyProviderFromStorage();
+    if (stickyProvider) {
+      setProvider(stickyProvider);
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -213,6 +304,31 @@ export default function HomePage() {
     customContext
   ]);
 
+  function applyProviderStickyFallback(meta?: ResponseMeta) {
+    if (
+      !meta ||
+      meta.providerUsed !== "nvidia" ||
+      meta.fallbackFrom !== "gemini" ||
+      !meta.stickyNvidiaToday
+    ) {
+      return;
+    }
+
+    const stickyState: StickyProviderState = {
+      provider: "nvidia",
+      expiresAt: getEndOfLocalDayTimestamp(),
+      reason: meta.fallbackReason || "rate_limit_daily"
+    };
+
+    try {
+      localStorage.setItem(PROVIDER_STICKY_STORAGE_KEY, JSON.stringify(stickyState));
+    } catch {
+      // Ignore localStorage failures and continue with in-memory state.
+    }
+
+    setProvider("nvidia");
+  }
+
   async function parseApiResponse<T>(response: Response): Promise<T & { error?: string }> {
     const raw = await response.text();
     try {
@@ -246,8 +362,8 @@ export default function HomePage() {
           credentials: "same-origin",
           body: JSON.stringify({
             mode,
-            provider: DEFAULT_PROVIDER,
-            model: DEFAULT_MODEL,
+            provider,
+            model: activeModel,
             thinkingMode,
             sourceLang,
             targetLang,
@@ -260,6 +376,8 @@ export default function HomePage() {
         if (!response.ok) {
           throw new Error(data.error || "Failed to translate text.");
         }
+        applyProviderStickyFallback(data.meta);
+        logExecutionMeta(data.meta, "text");
         setTextResult(data);
         return;
       }
@@ -277,8 +395,8 @@ export default function HomePage() {
         credentials: "same-origin",
         body: JSON.stringify({
           mode,
-          provider: DEFAULT_PROVIDER,
-          model: DEFAULT_MODEL,
+          provider,
+          model: activeModel,
           thinkingMode,
           jsonQualityMode,
           sourceLang,
@@ -293,6 +411,8 @@ export default function HomePage() {
         throw new Error(data.error || "Failed to process JSON.");
       }
 
+      applyProviderStickyFallback(data.meta);
+      logExecutionMeta(data.meta, "json");
       setJsonResult(data);
     } catch (err) {
       if (err instanceof TypeError && err.message === "Failed to fetch") {
@@ -345,8 +465,8 @@ export default function HomePage() {
   return (
     <main className="page-shell">
       <div className="demo-notice" role="note" aria-live="polite">
-        Demo notice: This version uses free AI models. Responses may be slower, and
-        temporary errors can occur.
+        Demo notice: This version uses free AI models. Responses may be slower,
+        and daily limits can be reached.
       </div>
 
       <header className="page-header">

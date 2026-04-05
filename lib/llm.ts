@@ -1,9 +1,8 @@
-import { GoogleGenAI } from "@google/genai";
-
 export type PipelineOutput = {
   initialTranslation: string;
   critique: string;
   improvedTranslation: string;
+  meta: ProviderExecutionMeta;
 };
 
 export type Provider = "nvidia" | "gemini";
@@ -34,6 +33,24 @@ export type BatchPipelineRow = {
   initial: string;
   critique: string;
   improved: string;
+};
+
+export type ProviderExecutionMeta = {
+  requestedProvider: Provider;
+  providerUsed: Provider;
+  modelUsed: string;
+  durationMs?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  fallbackFrom?: Provider;
+  fallbackReason?: "missing_api_key" | "retryable_error" | "rate_limit_daily";
+  stickyNvidiaToday?: boolean;
+};
+
+type ChatResult = {
+  text: string;
+  meta: ProviderExecutionMeta;
 };
 
 type TokenUsage = {
@@ -168,6 +185,71 @@ function getNvidiaFallbackModel(): string {
   return DEFAULT_NVIDIA_FALLBACK_MODEL;
 }
 
+function isDailyGeminiRateLimitMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("per day") ||
+    normalized.includes("requests per day") ||
+    normalized.includes("daily limit") ||
+    normalized.includes("daily quota") ||
+    normalized.includes("day limit") ||
+    normalized.includes("day quota") ||
+    normalized.includes("quota metric") && normalized.includes("day")
+  );
+}
+
+function buildMeta(params: {
+  requestedProvider: Provider;
+  providerUsed: Provider;
+  modelUsed: string;
+  durationMs?: number;
+  usage?: TokenUsage;
+  fallbackFrom?: Provider;
+  fallbackReason?: "missing_api_key" | "retryable_error" | "rate_limit_daily";
+  stickyNvidiaToday?: boolean;
+}): ProviderExecutionMeta {
+  return {
+    requestedProvider: params.requestedProvider,
+    providerUsed: params.providerUsed,
+    modelUsed: params.modelUsed,
+    durationMs: params.durationMs,
+    promptTokens: params.usage?.promptTokens,
+    completionTokens: params.usage?.completionTokens,
+    totalTokens: params.usage?.totalTokens,
+    fallbackFrom: params.fallbackFrom,
+    fallbackReason: params.fallbackReason,
+    stickyNvidiaToday: params.stickyNvidiaToday
+  };
+}
+
+function mergeExecutionMeta(
+  current: ProviderExecutionMeta | null,
+  next: ProviderExecutionMeta
+): ProviderExecutionMeta {
+  if (!current) {
+    return next;
+  }
+  const preferred = next.fallbackFrom ? next : current.fallbackFrom ? current : next;
+
+  return {
+    ...preferred,
+    durationMs: (current.durationMs || 0) + (next.durationMs || 0),
+    promptTokens:
+      current.promptTokens !== undefined || next.promptTokens !== undefined
+        ? (current.promptTokens || 0) + (next.promptTokens || 0)
+        : undefined,
+    completionTokens:
+      current.completionTokens !== undefined || next.completionTokens !== undefined
+        ? (current.completionTokens || 0) + (next.completionTokens || 0)
+        : undefined,
+    totalTokens:
+      current.totalTokens !== undefined || next.totalTokens !== undefined
+        ? (current.totalTokens || 0) + (next.totalTokens || 0)
+        : undefined,
+    stickyNvidiaToday: current.stickyNvidiaToday || next.stickyNvidiaToday
+  };
+}
+
 function isRetryablePrimaryError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -259,8 +341,12 @@ async function chatNvidia(
   system: string,
   user: string,
   thinkingMode: ThinkingMode,
-  inputChars?: number
-): Promise<string> {
+  inputChars?: number,
+  requestedProvider: Provider = "nvidia",
+  fallbackFrom?: Provider,
+  fallbackReason?: "missing_api_key" | "retryable_error" | "rate_limit_daily",
+  stickyNvidiaToday?: boolean
+): Promise<ChatResult> {
   const apiKey = getNvidiaApiKey();
   const heavyMode = thinkingMode === "extended" || thinkingMode === "deep";
   const timeoutMs = getAdaptiveTimeoutMs(thinkingMode, inputChars ?? user.length);
@@ -363,7 +449,23 @@ async function chatNvidia(
     }
   });
 
-  return data?.choices?.[0]?.message?.content?.trim() || "";
+  return {
+    text: data?.choices?.[0]?.message?.content?.trim() || "",
+    meta: buildMeta({
+      requestedProvider,
+      providerUsed: "nvidia",
+      modelUsed: model,
+      durationMs: Date.now() - startedAt,
+      usage: {
+        promptTokens: data?.usage?.prompt_tokens,
+        completionTokens: data?.usage?.completion_tokens,
+        totalTokens: data?.usage?.total_tokens
+      },
+      fallbackFrom,
+      fallbackReason,
+      stickyNvidiaToday
+    })
+  };
 }
 
 async function chatGemini(
@@ -371,41 +473,110 @@ async function chatGemini(
   system: string,
   user: string,
   thinkingMode: ThinkingMode,
-  inputChars?: number
-): Promise<string> {
+  inputChars?: number,
+  requestedProvider: Provider = "gemini",
+  fallbackFrom?: Provider,
+  fallbackReason?: "missing_api_key" | "retryable_error" | "rate_limit_daily"
+): Promise<ChatResult> {
   const heavyMode = thinkingMode === "extended" || thinkingMode === "deep";
   const timeoutMs = getAdaptiveTimeoutMs(thinkingMode, inputChars ?? user.length);
   const apiKey = getGeminiApiKey();
   const startedAt = Date.now();
-  const ai = new GoogleGenAI({ apiKey });
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  let response;
-  try {
-    response = await ai.models.generateContent({
-      model,
-      contents: user,
-      config: {
-        abortSignal: controller.signal,
-        systemInstruction: system,
-        temperature: heavyMode ? 0.2 : 0.3,
-        maxOutputTokens: MAX_OUTPUT_TOKENS_BY_MODE[thinkingMode]
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  let response: Response;
+  let data:
+    | {
+        usageMetadata?: {
+          promptTokenCount?: number;
+          candidatesTokenCount?: number;
+          totalTokenCount?: number;
+        };
+        candidates?: Array<{
+          content?: {
+            parts?: Array<{
+              text?: string;
+            }>;
+          };
+        }>;
+        error?: {
+          message?: string;
+        };
       }
-    });
+    | undefined;
+
+  try {
+    response = await fetchWithTimeout(
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: system }]
+          },
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: user }]
+            }
+          ],
+          generationConfig: {
+            temperature: heavyMode ? 0.2 : 0.3,
+            maxOutputTokens: MAX_OUTPUT_TOKENS_BY_MODE[thinkingMode]
+          }
+        })
+      }
+      ,
+      timeoutMs,
+      `AI request timed out in ${thinkingMode} mode. ${getTimeoutGuidance(thinkingMode)}`
+    );
   } catch (error) {
     console.info(
       `[llm] provider=gemini model=${model} durationMs=${Date.now() - startedAt} tokens=unknown`
     );
     if (error instanceof Error) {
-      if (error.name === "AbortError") {
-        throw new Error(`AI request timed out in ${thinkingMode} mode. ${getTimeoutGuidance(thinkingMode)}`);
-      }
       throw new Error(sanitizeProviderReferences(error.message));
     }
     throw error;
-  } finally {
-    clearTimeout(timer);
+  }
+
+  try {
+    data = (await response.json()) as {
+      usageMetadata?: {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        totalTokenCount?: number;
+      };
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{
+            text?: string;
+          }>;
+        };
+      }>;
+      error?: {
+        message?: string;
+      };
+    };
+  } catch {
+    if (!response.ok) {
+      console.info(
+        `[llm] provider=gemini model=${model} durationMs=${Date.now() - startedAt} status=${response.status} tokens=unknown`
+      );
+      throw new Error(`AI request failed (${response.status}). Please try again.`);
+    }
+  }
+
+  if (!response.ok) {
+    console.info(
+      `[llm] provider=gemini model=${model} durationMs=${Date.now() - startedAt} status=${response.status} tokens=unknown`
+    );
+    const errorMessage = sanitizeProviderReferences(
+      data?.error?.message || `AI request failed (${response.status}).`
+    );
+    throw new Error(errorMessage);
   }
 
   logModelCall({
@@ -413,13 +584,34 @@ async function chatGemini(
     model,
     durationMs: Date.now() - startedAt,
     usage: {
-      promptTokens: response.usageMetadata?.promptTokenCount,
-      completionTokens: response.usageMetadata?.candidatesTokenCount,
-      totalTokens: response.usageMetadata?.totalTokenCount
+      promptTokens: data?.usageMetadata?.promptTokenCount,
+      completionTokens: data?.usageMetadata?.candidatesTokenCount,
+      totalTokens: data?.usageMetadata?.totalTokenCount
     }
   });
 
-  return response.text?.trim() || "";
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || "")
+      .join("")
+      .trim() || "";
+
+  return {
+    text,
+    meta: buildMeta({
+      requestedProvider,
+      providerUsed: "gemini",
+      modelUsed: model,
+      durationMs: Date.now() - startedAt,
+      usage: {
+        promptTokens: data?.usageMetadata?.promptTokenCount,
+        completionTokens: data?.usageMetadata?.candidatesTokenCount,
+        totalTokens: data?.usageMetadata?.totalTokenCount
+      },
+      fallbackFrom,
+      fallbackReason
+    })
+  };
 }
 
 async function chat(
@@ -429,7 +621,7 @@ async function chat(
   user: string,
   thinkingMode: ThinkingMode,
   inputChars?: number
-): Promise<string> {
+): Promise<ChatResult> {
   if (provider === "gemini") {
     if (!hasGeminiApiKey() && hasNvidiaApiKey()) {
       return chatNvidia(
@@ -437,12 +629,15 @@ async function chat(
         system,
         user,
         thinkingMode,
-        inputChars
+        inputChars,
+        provider,
+        "gemini",
+        "missing_api_key"
       );
     }
 
     try {
-      return await chatGemini(model, system, user, thinkingMode, inputChars);
+      return await chatGemini(model, system, user, thinkingMode, inputChars, provider);
     } catch (primaryError) {
       const isRetryable =
         primaryError instanceof Error &&
@@ -453,22 +648,39 @@ async function chat(
         throw primaryError;
       }
 
+      const stickyNvidiaToday =
+        primaryError instanceof Error && isDailyGeminiRateLimitMessage(primaryError.message);
+      const fallbackReason = stickyNvidiaToday ? "rate_limit_daily" : "retryable_error";
+
       return chatNvidia(
         getNvidiaFallbackModel(),
         system,
         user,
         thinkingMode,
-        inputChars
+        inputChars,
+        provider,
+        "gemini",
+        fallbackReason,
+        stickyNvidiaToday
       );
     }
   }
 
   if (isNvidiaCircuitOpen() && hasGeminiApiKey()) {
-    return chatGemini(getGeminiFallbackModel(), system, user, thinkingMode, inputChars);
+    return chatGemini(
+      getGeminiFallbackModel(),
+      system,
+      user,
+      thinkingMode,
+      inputChars,
+      provider,
+      "nvidia",
+      "retryable_error"
+    );
   }
 
   try {
-    const result = await chatNvidia(model, system, user, thinkingMode, inputChars);
+    const result = await chatNvidia(model, system, user, thinkingMode, inputChars, provider);
     recordNvidiaSuccess();
     return result;
   } catch (primaryError) {
@@ -488,7 +700,10 @@ async function chat(
         system,
         user,
         thinkingMode,
-        inputChars
+        inputChars,
+        provider,
+        "nvidia",
+        "retryable_error"
       );
     } catch (fallbackError) {
       if (fallbackError instanceof Error) {
@@ -570,7 +785,7 @@ export async function runBatchTranslationFast(input: BatchTranslateInput): Promi
     return acc;
   }, {});
 
-  const raw = await chat(
+  const result = await chat(
     input.provider,
     input.model,
     `You are a professional localization translator from ${input.sourceLang} to ${input.targetLang}.`,
@@ -586,7 +801,7 @@ ${JSON.stringify(payload)}`,
     input.thinkingMode
   );
 
-  const parsed = tryParseJsonObject(raw);
+  const parsed = tryParseJsonObject(result.text);
   if (!parsed) {
     throw new Error("Fast JSON batch translation failed: model did not return valid JSON.");
   }
@@ -611,7 +826,7 @@ export async function runBatchTranslationQuality(input: BatchTranslateInput): Pr
   }, {});
   const keys = input.items.map((item) => item.key);
 
-  const initialRaw = await chat(
+  const initialResult = await chat(
     input.provider,
     input.model,
     `You are a professional localization translator from ${input.sourceLang} to ${input.targetLang}.`,
@@ -626,9 +841,13 @@ JSON:
 ${JSON.stringify(payload)}`,
     input.thinkingMode
   );
-  const initial = readStringMapFromJson(initialRaw, keys, "Quality JSON initial step failed");
+  const initial = readStringMapFromJson(
+    initialResult.text,
+    keys,
+    "Quality JSON initial step failed"
+  );
 
-  const critiqueRaw = await chat(
+  const critiqueResult = await chat(
     input.provider,
     input.model,
     `You are a senior localization reviewer for ${input.targetLang}.`,
@@ -646,9 +865,13 @@ TRANSLATION JSON:
 ${JSON.stringify(initial)}`,
     input.thinkingMode
   );
-  const critique = readStringMapFromJson(critiqueRaw, keys, "Quality JSON critique step failed");
+  const critique = readStringMapFromJson(
+    critiqueResult.text,
+    keys,
+    "Quality JSON critique step failed"
+  );
 
-  const improvedRaw = await chat(
+  const improvedResult = await chat(
     input.provider,
     input.model,
     `You are a professional translation editor from ${input.sourceLang} to ${input.targetLang}.`,
@@ -669,7 +892,11 @@ CRITIQUE JSON:
 ${JSON.stringify(critique)}`,
     input.thinkingMode
   );
-  const improved = readStringMapFromJson(improvedRaw, keys, "Quality JSON improve step failed");
+  const improved = readStringMapFromJson(
+    improvedResult.text,
+    keys,
+    "Quality JSON improve step failed"
+  );
 
   return keys.map((key) => ({
     key,
@@ -682,8 +909,9 @@ ${JSON.stringify(critique)}`,
 export async function runTranslationPipeline(input: PipelineInput): Promise<PipelineOutput> {
   const baseContext = input.context?.trim() ? `Context: ${input.context.trim()}\n\n` : "";
   const inputChars = input.text.length;
+  let meta: ProviderExecutionMeta | null = null;
 
-  const initialTranslation = await chat(
+  const initialResult = await chat(
     input.provider,
     input.model,
     `You are a professional translator from ${input.sourceLang} to ${input.targetLang}. Return only translation.`,
@@ -691,8 +919,10 @@ export async function runTranslationPipeline(input: PipelineInput): Promise<Pipe
     input.thinkingMode,
     inputChars
   );
+  meta = mergeExecutionMeta(meta, initialResult.meta);
+  const initialTranslation = initialResult.text;
 
-  const critique = await chat(
+  const critiqueResult = await chat(
     input.provider,
     input.model,
     `You are a senior localization reviewer for ${input.targetLang}.`,
@@ -700,8 +930,10 @@ export async function runTranslationPipeline(input: PipelineInput): Promise<Pipe
     input.thinkingMode,
     inputChars
   );
+  meta = mergeExecutionMeta(meta, critiqueResult.meta);
+  const critique = critiqueResult.text;
 
-  const improvedTranslation = await chat(
+  const improvedResult = await chat(
     input.provider,
     input.model,
     `You are a professional translation editor from ${input.sourceLang} to ${input.targetLang}.`,
@@ -709,6 +941,17 @@ export async function runTranslationPipeline(input: PipelineInput): Promise<Pipe
     input.thinkingMode,
     inputChars
   );
+  meta = mergeExecutionMeta(meta, improvedResult.meta);
+  const improvedTranslation = improvedResult.text;
 
-  return { initialTranslation, critique, improvedTranslation };
+  return {
+    initialTranslation,
+    critique,
+    improvedTranslation,
+    meta: meta || buildMeta({
+      requestedProvider: input.provider,
+      providerUsed: input.provider,
+      modelUsed: input.model
+    })
+  };
 }

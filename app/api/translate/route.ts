@@ -5,6 +5,7 @@ export const runtime = "edge";
 import { flattenObject, unflattenObject } from "@/lib/json";
 import {
   type BatchPipelineRow,
+  type ProviderExecutionMeta,
   type Provider,
   type ThinkingMode,
   runBatchTranslationFast,
@@ -36,6 +37,23 @@ type JsonPayload = {
 };
 
 type Payload = TextPayload | JsonPayload;
+type ResponseMeta = ProviderExecutionMeta;
+
+function formatExecutionMeta(meta: ResponseMeta): string {
+  const parts = [
+    `requested=${meta.requestedProvider}`,
+    `used=${meta.providerUsed}`,
+    `model=${meta.modelUsed}`,
+    meta.durationMs !== undefined ? `durationMs=${meta.durationMs}` : null,
+    meta.promptTokens !== undefined ? `prompt=${meta.promptTokens}` : null,
+    meta.completionTokens !== undefined ? `completion=${meta.completionTokens}` : null,
+    meta.totalTokens !== undefined ? `total=${meta.totalTokens}` : null,
+    meta.fallbackFrom ? `fallbackFrom=${meta.fallbackFrom}` : null,
+    meta.fallbackReason ? `fallbackReason=${meta.fallbackReason}` : null
+  ].filter(Boolean);
+
+  return parts.join(" ");
+}
 
 const JSON_BATCH_CHAR_BUDGET = 28_000;
 const JSON_BATCH_SAFETY_CHARS = 4_000;
@@ -65,8 +83,13 @@ type RateLimitState = {
 const rateLimitState = new Map<string, RateLimitState>();
 let lastRateLimitCleanupAt = 0;
 
-function getServerTranslationConfig(): { provider: Provider; model: string } {
-  const provider = SERVER_DEFAULT_PROVIDER;
+function isProvider(value: unknown): value is Provider {
+  return value === "gemini" || value === "nvidia";
+}
+
+function getServerTranslationConfig(requestedProvider?: unknown): { provider: Provider; model: string } {
+  const provider =
+    isProvider(requestedProvider) ? requestedProvider : SERVER_DEFAULT_PROVIDER;
   return {
     provider,
     model: provider === "gemini" ? SERVER_GEMINI_MODEL : SERVER_NVIDIA_MODEL
@@ -278,8 +301,8 @@ export async function POST(req: Request) {
       );
     }
 
-    const translationConfig = getServerTranslationConfig();
     const body = (await req.json()) as Payload;
+    const translationConfig = getServerTranslationConfig(body.provider);
 
     if (body.mode === "text") {
       const result = await runTranslationPipeline({
@@ -291,6 +314,7 @@ export async function POST(req: Request) {
         context: body.context,
         text: body.text
       });
+      console.info(`[translate] ${formatExecutionMeta(result.meta)}`);
       return NextResponse.json(result);
     }
 
@@ -399,9 +423,17 @@ export async function POST(req: Request) {
       }
     }
 
+    const meta = {
+      requestedProvider: translationConfig.provider,
+      providerUsed: translationConfig.provider,
+      modelUsed: translationConfig.model
+    } satisfies ResponseMeta;
+    console.info(`[translate-json] ${formatExecutionMeta(meta)}`);
+
     return NextResponse.json({
       table,
-      translatedJson: unflattenObject(translatedFlat)
+      translatedJson: unflattenObject(translatedFlat),
+      meta
     });
   } catch (error) {
     console.error("Translation error:", error);
